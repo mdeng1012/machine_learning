@@ -1,0 +1,111 @@
+---
+title: "Practical Machine Learning Project: Human Activity Analysis"
+author: "Mike Deng"
+date: "Saturday, September 26, 2015"
+output: html_document
+---
+
+## Introduction
+This is a project to to predict the manner in which they did the exercise. Today, people regularly quantily how much they do of a particular activity using wearable device in order to improve their health, but they rarely quantify how well they do it. Six participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The data were collected from accelerometers on the belt, forearm, arm, and dumbell. More information is available from the website here: <http://groupware.les.inf.puc-rio.br/har>.
+
+## Load Data
+Training data and testing data are made available as [pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and [pml-test.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv). Both training and testing data have many missing values as empty and NA. The data will be loaded treating those missing values as "NA".
+
+```{r}
+ttrain <- read.csv("pml-training.csv", na.strings=c("", "NA"))
+ttest <- read.csv("pml-testing.csv", na.strings=c("", "NA"))
+dim(ttrain)
+dim(ttest)
+```
+
+## Clean Up Data
+There are 160 columns in the data frames. However, many columns have almost all missing value, they need to be removed from the raw data.
+
+```{r}
+pml_train <- ttrain[,sapply(ttrain, function(x) sum(is.na(x)) == 0)]
+pml_test <- ttest[,sapply(ttest, function(x) sum(is.na(x)) == 0)]
+```
+
+Note that the column types in pml_train and pml_test do not match exactly, and so do the levels of some factors. (different level in predictor factors will cause error when running predict). This can be addressed by
+
+```{r}
+# fix the mismatching column type
+pml_test <- transform(pml_test, magnet_dumbbell_z = as.numeric(magnet_dumbbell_z),magnet_forearm_y = as.numeric(magnet_forearm_y), magnet_forearm_z = as.numeric(magnet_forearm_z))
+
+# fix the factor column levels
+for ( i in 1:length(pml_test[1,]) )
+  if (is.factor(pml_test[,i])) 
+     levels(pml_test[,i]) <- levels(pml_train[,i])
+
+dim(pml_train)
+dim(pml_test)
+```
+## Analize Error of Different Predictors with Cross Validation
+To get an idea on the possiblity of overfitting if using all the features/predictors in random forest model, rfcv function is applied with 3-fold cross validations.
+```{r, cache=TRUE}
+library(caret, quietly=T,warn.conflicts=F)
+library(randomForest, quietly=T,warn.conflicts=F)
+library(parallel, quietly=T,warn.conflicts=F)
+library(doParallel, quietly=T,warn.conflicts=F)
+
+set.seed(125521)
+
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+
+result <- rfcv(pml_train[,-60], pml_train[,60], cv.fold=3)
+
+stopCluster(cluster)
+```
+Plot and print out the cross validation error versus number of predictors selected.
+```{r}
+with(result, plot(n.var, error.cv, log="x", type="o", lwd=2))
+result$error.cv
+```
+As can see from the plot, the error is small, so it may not be necessary to loop and select predictors. In our random forest model, we will use all the predictors.
+
+### Comments on Error Estimate and Cross Validation in Random Forest
+The following comments are taken from https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr.
+
+In random forests, there is no need for cross-validation or a separate test set to get an unbiased estimate of the test set error. It is estimated internally, during the run, as follows:
+
+Each tree is constructed using a different bootstrap sample from the original data. About one-third of the cases are left out of the bootstrap sample and not used in the construction of the kth tree.
+
+Put each case left out in the construction of the kth tree down the kth tree to get a classification. In this way, a test set classification is obtained for each case in about one-third of the trees. At the end of the run, take j to be the class that got most of the votes every time case n was oob. The proportion of times that j is not equal to the true class of n averaged over all cases is the oob error estimate. This has proven to be unbiased in many tests.
+
+## Fit the Random Forest Model
+Random forest and boosting are usually top two performance models in prediction tests. (From class notes). In this project, random forest will be used to fit the model. Generally, random forest is very accurate, but it may overfit. As discussed in the last section, overfitting for our data is not a concern even all the predictors are used.
+```{r, cache=TRUE}
+## Turn on PP
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+
+fit2 <- randomForest(classe ~ ., data=pml_train, mtry=3, importance=TRUE, na.action=na.omit)
+
+## Turn off PP
+stopCluster(cluster)
+```
+Confusion matrix on the training data itself are
+```{r}
+confusionMatrix(predict(fit2,pml_train), pml_train$classe)
+```
+
+## Predict Test Data
+Now let's apply random forest algorithm to the 20 test cases available in the test data above:
+```{r}
+answers <- predict(fit2, newdata=pml_test)
+print(answers)
+```
+
+## Prepare Submit Files
+To submit predictions to the programming assignment for automated grading, they need to be parepared in appropriate format of one letter text file:
+```{r }
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(answers)
+```
